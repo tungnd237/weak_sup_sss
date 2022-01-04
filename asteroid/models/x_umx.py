@@ -63,7 +63,7 @@ class XUMX(BaseModel):
         spec_power=1,
         return_time_signals=False,
     ):
-        super().__init__(sample_rate)
+        super().__init__(sample_rate, nb_channels)
 
         self.window_length = window_length
         self.in_chan = in_chan

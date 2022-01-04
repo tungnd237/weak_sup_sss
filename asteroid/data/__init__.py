@@ -5,6 +5,7 @@ from .dns_dataset import DNSDataset
 from .librimix_dataset import LibriMix
 from .wsj0_mix import Wsj0mixDataset
 from .musdb18_dataset import MUSDB18Dataset
+from .mimii_dataset import MIMIIDataset
 from .sms_wsj_dataset import SmsWsjDataset
 from .kinect_wsj import KinectWsjMixDataset
 from .fuss_dataset import FUSSDataset
@@ -19,6 +20,7 @@ __all__ = [
     "LibriMix",
     "Wsj0mixDataset",
     "MUSDB18Dataset",
+    "MIMIIDataset",
     "SmsWsjDataset",
     "KinectWsjMixDataset",
     "FUSSDataset",

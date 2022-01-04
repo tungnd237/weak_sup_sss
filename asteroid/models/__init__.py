@@ -20,6 +20,7 @@ __all__ = [
     "SuDORMRFImprovedNet",
     "SuDORMRFNet",
     "DPTNet",
+    "FasNetTAC",
     "LSTMTasNet",
     "DeMask",
     "DCUNet",
