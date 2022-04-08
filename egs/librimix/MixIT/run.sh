@@ -13,14 +13,15 @@ storage_dir=/data1/LibriMix/storage_dir
 
 # Path to the python you'll use for the experiment. Defaults to the current python
 # You can run ./utils/prepare_python_env.sh to create a suitable python environment, paste the output here.
-python_path=python
+python_path=/home/kjc/.conda/envs/mtp/bin/python
 
 # Example usage
 # ./run.sh --stage 3 --tag my_tag --task sep_noisy --id 0,1
 
 # General
 stage=2  # Controls from which stage to start
-tag="mixit_libri_full"  # Controls the directory name associated to the experiment
+tag="label_libri_small"  # Controls the directory name associated to the experiment
+# tag="sup_libri_small"  
 # You can ask for several GPUs using id (passed to CUDA_VISIBLE_DEVICES)
 id=$CUDA_VISIBLE_DEVICES
 out_dir=librimix # Controls the directory name associated to the evaluation results inside the experiment directory
@@ -28,14 +29,14 @@ out_dir=librimix # Controls the directory name associated to the evaluation resu
 # Network config
 
 # Training config
-epochs=200
-batch_size=8
-num_workers=4
+epochs=2000
+batch_size=6
+num_workers=2
 half_lr=yes
-early_stop=yes
+early_stop=no
 # Optim config
 optimizer=adam
-lr=0.001
+lr=0.0001
 weight_decay=0.
 # Data config
 sample_rate=16000
@@ -61,9 +62,9 @@ if [ -z "$eval_mode" ]; then
   eval_mode=$mode
 fi
 
-train_dir=data/$suffix/train-360
-valid_dir=data/$suffix/dev
-test_dir=data/wav${sr_string}k/$eval_mode/test
+train_dir=data/$suffix/train-100
+valid_dir=data/$suffix/train-100
+test_dir=data/wav${sr_string}k/$eval_mode/train-100
 
 if [[ $stage -le  0 ]]; then
 	echo "Stage 0: Generating Librimix dataset"
@@ -89,7 +90,7 @@ echo "Results from the following experiment will be stored in $expdir"
 if [[ $stage -le 2 ]]; then
   echo "Stage 2: Training"
   mkdir -p logs
-  CUDA_VISIBLE_DEVICES=$id $python_path train.py --exp_dir $expdir \
+  CUDA_VISIBLE_DEVICES=$id $python_path train_label.py --exp_dir $expdir \
 		--epochs $epochs \
 		--batch_size $batch_size \
 		--num_workers $num_workers \

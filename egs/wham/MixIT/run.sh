@@ -6,14 +6,14 @@ set -o pipefail
 
 # Main storage directory. You'll need disk space to dump the WHAM mixtures and the wsj0 wav
 # files if you start from sphere files.
-storage_dir=
+storage_dir=/hdd/hdd1/wham/storage
 
 # If you start from the sphere files, specify the path to the directory and start from stage 0
-sphere_dir=  # Directory containing sphere files
+sphere_dir=/hdd/hdd1/wham/sphere  # Directory containing sphere files
 # If you already have wsj0 wav files, specify the path to the directory here and start from stage 1
-wsj0_wav_dir=
+wsj0_wav_dir=/hdd/hdd1/wham/wsj0
 # If you already have the WHAM mixtures, specify the path to the directory here and start from stage 2
-wham_wav_dir=/media/sam/cb915f0e-e440-414c-bb74-df66b311d09d/2speakers_wham/
+wham_wav_dir=/hdd/hdd1/wham/wham
 # After running the recipe a first time, you can run it from stage 3 directly to train new models.
 
 # Path to the python you'll use for the experiment. Defaults to the current python
@@ -24,8 +24,8 @@ python_path=python
 # ./run.sh --stage 3 --tag my_tag --task sep_noisy --id 0,1
 
 # General
-stage=3  # Controls from which stage to start
-tag=""  # Controls the directory name associated to the experiment
+stage=0  # Controls from which stage to start
+tag="setup"  # Controls the directory name associated to the experiment
 # You can ask for several GPUs using id (passed to CUDA_VISIBLE_DEVICES)
 id=0
 
