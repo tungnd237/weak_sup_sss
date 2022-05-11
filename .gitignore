@@ -1,6 +1,7 @@
 # Project specific
 uploader_info.yml
 egs/**/exp
+egs/**/data
 # Where we'll save pretrained models git folders.
 pretrained_models
 

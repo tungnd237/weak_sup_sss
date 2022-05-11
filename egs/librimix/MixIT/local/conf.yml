@@ -31,8 +31,8 @@ optim:
 # Data config
 data:
   task: sep_clean
-  train_dir: data/wav16k/max/train-360
-  valid_dir: data/wav16k/max/dev
+  train_dir: data/wav16k/max/train-100
+  valid_dir: data/wav16k/max/train-100
   sample_rate: 16000
   n_src: 2
   segment: 1

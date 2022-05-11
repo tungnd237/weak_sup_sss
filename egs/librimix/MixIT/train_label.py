@@ -32,28 +32,36 @@ class MixITSystem(System):
         mixtures, oracle, ids = batch
         
         bsz = mixtures.shape[0]
-        mix1 = mixtures[bsz // 2 :]
-        mix2 = mixtures[: bsz // 2]
+        mix1 = mixtures[bsz // 2 :, :]
+        mix2 = mixtures[: bsz // 2, :]
         moms = mix1 + mix2
 
         est_sources = self(moms)
 
-        mixed_bsz = mixtures.shape[0] // 2
+        new_batch = list(range(mixtures.shape[0] // 2))
+        for b in new_batch:
+            if len(set([ids[0][b].split('-')[0], ids[1][b].split('-')[0], 
+                ids[0][b + bsz // 2].split('-')[0], ids[1][b + bsz // 2].split('-')[0]])) != 4 :
+                new_batch.remove(b)
 
-        src_mix1_0_indexes = [id_channel_mapping[ids[0][b].split('-')[0]] for b in range(mixed_bsz)]
-        src_mix1_1_indexes = [id_channel_mapping[ids[1][b].split('-')[0]] for b in range(mixed_bsz)]
-        src_mix2_0_indexes = [id_channel_mapping[ids[0][b + bsz // 2].split('-')[0]] for b in range(mixed_bsz)]
-        src_mix2_1_indexes = [id_channel_mapping[ids[1][b + bsz // 2].split('-')[0]] for b in range(mixed_bsz)]
-        est_mix1 = torch.stack([est_sources[b, src_mix1_0_indexes[b], :] for b in range(mixed_bsz)], dim=0) \
-            + torch.stack([est_sources[b, src_mix1_1_indexes[b], :] for b in range(mixed_bsz)], dim=0)
-        est_mix2 = torch.stack([est_sources[b, src_mix2_0_indexes[b], :] for b in range(mixed_bsz)], dim=0) \
-            + torch.stack([est_sources[b, src_mix2_1_indexes[b], :] for b in range(mixed_bsz)], dim=0)
+        if len(new_batch) == 0:
+            pass
+
+        src_mix1_0_indexes = [id_channel_mapping[ids[0][b].split('-')[0]] for b in new_batch]
+        src_mix1_1_indexes = [id_channel_mapping[ids[1][b].split('-')[0]] for b in new_batch]
+        src_mix2_0_indexes = [id_channel_mapping[ids[0][b + bsz // 2].split('-')[0]] for b in new_batch]
+        src_mix2_1_indexes = [id_channel_mapping[ids[1][b + bsz // 2].split('-')[0]] for b in new_batch]
+        est_mix1 = torch.stack([est_sources[new_batch[i], mix_i, :] for i, mix_i in enumerate(src_mix1_0_indexes)], dim=0) \
+            + torch.stack([est_sources[new_batch[i], mix_i, :] for i, mix_i in enumerate(src_mix1_1_indexes)], dim=0)
+        est_mix2 = torch.stack([est_sources[new_batch[i], mix_i, :] for i, mix_i in enumerate(src_mix2_0_indexes)], dim=0) \
+            + torch.stack([est_sources[new_batch[i], mix_i, :] for i, mix_i in enumerate(src_mix2_1_indexes)], dim=0)
         est_channels = torch.stack([est_mix1, est_mix2], dim=1)
 
-        ref_mixes = torch.stack([mix1, mix2], dim=1)
+        ref_mixes = torch.stack([mix1, mix2], dim=1)[new_batch, :, :]
         loss = self.loss_func(est_channels, ref_mixes).mean()
 
-        tensorboard_logs = {"train_loss": loss}
+        tensorboard_logs = {"train_loss": loss.detach().clone()}
+        self.log_dict(tensorboard_logs)
 
         return {"loss": loss, "log": tensorboard_logs}
 
@@ -74,7 +82,7 @@ class MixITSystem(System):
 
         loss = self.loss_func(est_channels, oracle).mean()
 
-        loss_dict = {"val_loss": loss.detach()}
+        loss_dict = {"val_loss": loss.detach().clone()}
         self.log_dict(loss_dict)
         return loss_dict
 
@@ -168,6 +176,7 @@ def main(conf):
         gpus=gpus,
         distributed_backend=distributed_backend,
         gradient_clip_val=conf["training"]["gradient_clipping"],
+        log_every_n_steps=20,
     )
     trainer.fit(system)
 

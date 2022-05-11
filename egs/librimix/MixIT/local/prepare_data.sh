@@ -2,7 +2,7 @@
 
 storage_dir=/data1/LibriMix/storage_dir
 n_src=2
-python_path=python
+python_path=/home/kjc/.conda/envs/mtp/bin/python
 
 . ./utils/parse_options.sh
 
