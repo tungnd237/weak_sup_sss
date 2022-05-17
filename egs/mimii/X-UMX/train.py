@@ -3,6 +3,7 @@ import argparse
 import json
 import random
 import copy
+from weakref import ref
 import tqdm
 import itertools
 import numpy as np
@@ -14,7 +15,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from asteroid.engine.system import System
 from asteroid.engine.optimizers import make_optimizer
-from asteroid.models import XUMX
+from asteroid.models import XUMX, Separator, Classifier
 from asteroid.models.x_umx import _STFT, _Spectrogram
 from asteroid.losses import singlesrc_mse
 from torch.nn.modules.loss import _Loss
@@ -78,6 +79,7 @@ def freq_domain_loss(s_hat, gt_spec, combination=True):
     Output:
         calculated frequency-domain loss
     """
+    gt_spec = gt_spec.permute(3, 1, 2, 0)
 
     n_src = len(s_hat)
     idx_list = [i for i in range(n_src)]
@@ -86,7 +88,8 @@ def freq_domain_loss(s_hat, gt_spec, combination=True):
     refrences = []
     for i, s in enumerate(s_hat):
         inferences.append(s)
-        refrences.append(gt_spec[..., 2 * i : 2 * i + 2, :])
+        #refrences.append(gt_spec[..., 2 * i : 2 * i + 2, :])
+        refrences.append(gt_spec[..., i, :].unsqueeze(2))
     assert inferences[0].shape == refrences[0].shape
 
     _loss_mse = 0.0
@@ -273,12 +276,12 @@ class MultiDomainLoss(_Loss):
         """
 
         spec_hat = est_targets[0]
-        time_hat = est_targets[1]
+        time_hat = est_targets[1]  #time_hat == wave_out
 
         # Fix shape and apply transformation of targets
-        n_batch, n_src, n_channel, time_length = targets.shape
+        n_batch, n_src, n_channel, time_length = targets.shape  #targets == wav
         targets = targets.view(n_batch, n_src * n_channel, time_length)
-        Y = self.transform(targets)[0]
+        Y = self.transform(targets)[0]  # Y --> spectrogram of mixture
 
         if self._multi:
             n_src = spec_hat.shape[0]
@@ -335,6 +338,12 @@ class XUMXManager(System):
         super().__init__(model, optimizer, loss_func, train_loader, val_loader, scheduler, config)
         self.val_dur_samples = model.sample_rate * val_dur
 
+    def common_step(self, batch, batch_nb, train=True):
+        inputs, targets = batch
+        est_targets = self(inputs)
+        loss = self.loss_func(est_targets, targets)
+        return loss
+
     def validation_step(self, batch, batch_nb):
         """
         We calculate the ``validation loss'' by splitting each song into
@@ -376,38 +385,52 @@ def main(conf, args):
     dataloader_kwargs = (
         {"num_workers": args.num_workers, "pin_memory": True} if torch.cuda.is_available() else {}
     )
+   
     train_sampler = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True, **dataloader_kwargs
     )
     valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     # Define model and optimizer
-    if args.pretrained is not None:
-        scaler_mean = None
-        scaler_std = None
-    else:
-        scaler_mean, scaler_std = get_statistics(args, train_dataset)
+    # if args.pretrained is not None:
+    #     scaler_mean = None
+    #     scaler_std = None
+    # else:
+    #     scaler_mean, scaler_std = get_statistics(args, train_dataset)
 
-    max_bin = bandwidth_to_max_bin(train_dataset.sample_rate, args.in_chan, args.bandwidth)
+    # max_bin = bandwidth_to_max_bin(train_dataset.sample_rate, args.in_chan, args.bandwidth)
 
-    x_unmix = XUMX(
+    # x_unmix = XUMX(
+    #     window_length=args.window_length,
+    #     input_mean=scaler_mean,
+    #     input_scale=scaler_std,
+    #     nb_channels=args.nb_channels,
+    #     hidden_size=args.hidden_size,
+    #     in_chan=args.in_chan,
+    #     n_hop=args.nhop,
+    #     sources=args.sources,
+    #     max_bin=max_bin,
+    #     bidirectional=args.bidirectional,
+    #     sample_rate=train_dataset.sample_rate,
+    #     spec_power=args.spec_power,
+    #     return_time_signals=True if args.loss_use_multidomain else False,
+    # )
+
+    separator = Separator(
+        input_size = 2049,   #TODO: input_size의 정체
+        hidden_size = 600,
+        num_layer = 3,
+        num_sources = 4,
         window_length=args.window_length,
-        input_mean=scaler_mean,
-        input_scale=scaler_std,
-        nb_channels=args.nb_channels,
-        hidden_size=args.hidden_size,
         in_chan=args.in_chan,
         n_hop=args.nhop,
-        sources=args.sources,
-        max_bin=max_bin,
-        bidirectional=args.bidirectional,
-        sample_rate=train_dataset.sample_rate,
         spec_power=args.spec_power,
-        return_time_signals=True if args.loss_use_multidomain else False,
+        nb_channels=args.nb_channels,
+        sample_rate = train_dataset.sample_rate
     )
 
     optimizer = make_optimizer(
-        x_unmix.parameters(), lr=args.lr, optimizer="adam", weight_decay=args.weight_decay
+        separator.parameters(), lr=args.lr, optimizer="adam", weight_decay=args.weight_decay
     )
 
     # Define scheduler
@@ -434,7 +457,7 @@ def main(conf, args):
         mix_coef=args.mix_coef,
     )
     system = XUMXManager(
-        model=x_unmix,
+        model=separator,
         loss_func=loss_func,
         optimizer=optimizer,
         train_loader=train_sampler,

@@ -332,6 +332,7 @@ class _STFT(nn.Module):
 
         nb_samples, nb_channels, nb_timesteps = x.size()
 
+
         # merge nb_samples and nb_channels for multichannel stft
         x = x.reshape(nb_samples * nb_channels, -1)
 
@@ -404,3 +405,5 @@ class _ISTFT(nn.Module):
         wav = wav.view(sources, bsize, channels, wav.shape[-1])
 
         return wav
+
+
