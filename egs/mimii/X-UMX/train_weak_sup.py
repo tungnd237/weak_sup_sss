@@ -182,7 +182,7 @@ def cal_mix_loss(audio_mix_gt, pred, binary_class_label):
 
     recon_loss = torch.abs(mix_spec - mix_target)
             
-    mix_loss = torch.sum(recon_loss + mute_target)
+    mix_loss = torch.mean(recon_loss + mute_target)
    
     return mix_loss
 
@@ -196,6 +196,7 @@ def cal_frame_loss(gt_label, pred_label):
 
     for src in range(num_src):
         frame_loss += criterion(gt_label[:, src, :], pred_label[:, src, :])
+    frame_loss = torch.mean(frame_loss)
     return frame_loss
 
 
@@ -206,6 +207,10 @@ def cal_total_loss(audio_mix, time_labels, src_pred, score_pred, binary_class_la
     total_loss = beta1 * mix_loss + beta2 * frame_loss
 
     return total_loss
+
+def cal_sup_loss(audio_mix, time_labels = None, src_pred = None, score_pred = None, binary_class_label):
+    sup_loss = 0
+    return sup_loss
 
 
 if __name__ == "__main__":
