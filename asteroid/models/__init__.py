@@ -27,7 +27,8 @@ __all__ = [
     "DCUNet",
     "DCCRNet",
     "XUMX",
-    "weak_sup",
+    "Separator",
+    "Classifier",
     "save_publishable",
     "upload_publishable",
 ]
