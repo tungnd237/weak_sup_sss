@@ -15,6 +15,8 @@ from torchmetrics.functional.audio import scale_invariant_signal_distortion_rati
 
 wandb.init(project="weak_sup")
 
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
+os.environ["CUDA_VISIBLE_DEVICES"]= "1"
 
 class UrbanSoundDataset(torch.utils.data.Dataset):
 
@@ -24,59 +26,63 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
         self.audio_dir = audio_dir 
         self.target_sample_rate = target_sample_rate
         self.target_time = target_time
+        self.data = {}
 
     def __len__(self):
         return len(self.file_path_lst)
 
     def __getitem__(self, index):
-        # TODO: adpative pooling dimension 정리
-        # set adaptivepooling 
-        m = nn.AdaptiveAvgPool1d(126)
-        # assemble the mixture of target
-        audio_sources = {src: torch.zeros(1, self.target_sample_rate* self.target_time).cuda() for src in self.class_id_lst}
-        time_labels = {src: torch.zeros(1, 126).cuda() for src in self.class_id_lst}
+        if self.data == None:
+            # TODO: adpative pooling dimension 정리
+            # set adaptivepooling 
+            m = nn.AdaptiveAvgPool1d(126)
+            # assemble the mixture of target
+            audio_sources = {src: torch.zeros(1, self.target_sample_rate* self.target_time).cuda() for src in self.class_id_lst}
+            time_labels = {src: torch.zeros(1, 126).cuda() for src in self.class_id_lst}
 
-        # load sources
-        audio_target_path, class_id_target = self._get_audio_sample_path(index)
-       
-        for idx, source in enumerate(class_id_target):
+            # load sources
+            audio_target_path, class_id_target = self._get_audio_sample_path(index)
+        
+            for idx, source in enumerate(class_id_target):
 
-            # load, downsample, convert to mono
-            audio, sr = torchaudio.load(audio_target_path[idx])
-            audio = self._resample_if_necessary(audio, self.target_sample_rate)
-            audio = torch.mean(audio, dim = 0).reshape(1, -1).cuda()
+                # load, downsample, convert to mono
+                audio, sr = torchaudio.load(audio_target_path[idx])
+                audio = self._resample_if_necessary(audio, self.target_sample_rate)
+                audio = torch.mean(audio, dim = 0).reshape(1, -1).cuda()
+                
+                # randomly select the starting point and truncate if it's longer than target length
+                # generate time label
+                start = random.randint(0, self.target_sample_rate)
+                end = start + audio.shape[1]
+
+                if end > self.target_sample_rate * self.target_time:
+                    end_truncated = self.target_sample_rate * self.target_time - end
+                    audio_sources[source][:, start:] = audio[:, :end_truncated]
+                    time_labels[source][:, start:] = 1
+                else:
+                    audio_sources[source][:, start:end] = audio
+                    time_labels[source][:, start:end] = 1
+                time_labels[source] = m(time_labels[source])
             
-            # randomly select the starting point and truncate if it's longer than target length
-            # generate time label
-            start = random.randint(0, self.target_sample_rate)
-            end = start + audio.shape[1]
+                assert audio_sources[source].shape[1] == self.target_sample_rate * self.target_time
 
-            if end > self.target_sample_rate * self.target_time:
-                end_truncated = self.target_sample_rate * self.target_time - end
-                audio_sources[source][:, start:] = audio[:, :end_truncated]
-                time_labels[source][:, start:] = 1
-            else:
-                audio_sources[source][:, start:end] = audio
-                time_labels[source][:, start:end] = 1
-            time_labels[source] = m(time_labels[source])
-           
-            assert audio_sources[source].shape[1] == self.target_sample_rate * self.target_time
+                # generate time label
+                # TODO: define the function which generate time labels
 
-            # generate time label
-            # TODO: define the function which generate time labels
+            # generate mixture
+            audio_mix = torch.stack(list(audio_sources.values())).sum(0)
+            audio_sources = torch.stack([wav for wav in audio_sources.values()], dim=0)
+            time_labels = torch.stack([label for label in time_labels.values()], dim=0)
+                
+        
+            # convert class_id_target to binary label
+            binary_class_label = torch.zeros(len(self.class_id_lst))
 
-        # generate mixture
-        audio_mix = torch.stack(list(audio_sources.values())).sum(0)
-        audio_sources = torch.stack([wav for wav in audio_sources.values()], dim=0)
-        time_labels = torch.stack([label for label in time_labels.values()], dim=0)
-            
-     
-        # convert class_id_target to binary label
-        binary_class_label = torch.zeros(len(self.class_id_lst))
+            for idx, id in enumerate(self.class_id_lst):
+                if id in class_id_target:
+                    binary_class_label[idx] = 1
+        else:
 
-        for idx, id in enumerate(self.class_id_lst):
-            if id in class_id_target:
-                binary_class_label[idx] = 1
                 
         return audio_mix, audio_sources, time_labels, binary_class_label
 
@@ -208,8 +214,16 @@ def cal_total_loss(audio_mix, time_labels, src_pred, score_pred, binary_class_la
 
     return total_loss
 
-def cal_sup_loss(audio_mix, time_labels = None, src_pred = None, score_pred = None, binary_class_label):
-    sup_loss = 0
+def cal_sup_loss(audio_sources, src_pred):
+    # audio_sources: (B, n_src, 1, sr*time) --> (B, n_src, sr*time)
+    # src_pred: (n_src, B, 1, sr*time)
+
+    # set dimension as the same
+    audio_sources = audio_sources.squeeze(2) 
+    src_pred = src_pred.permute(1, 0 ,2, 3).squeeze(2)
+
+    sup_loss = torch.mean(torch.abs(audio_sources - src_pred))
+
     return sup_loss
 
 
@@ -236,10 +250,12 @@ if __name__ == "__main__":
     epoch_val = param["epoch_val"]
 
     model = Separator(input_size, hidden_size, num_layer).cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr = 1.0e-4)
-    loss_fn = cal_total_loss
+    optimizer = torch.optim.Adam(model.parameters(), lr = 1.0e-3)
+    loss_fn = cal_sup_loss
+    #loss_fn = cal_total_loss
 
     for epoch in range(1, param["epochs"]):
+        print(epoch)
         losses = []
         for batch in train_loader:
             
@@ -248,8 +264,9 @@ if __name__ == "__main__":
             time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
             binary_class_label = batch[3].cuda()
 
-            src_pred, score_pred, _ = model(audio_mix) # (n_src, B, 1, freq, time) (n_src, B, time)
-            loss = loss_fn(audio_mix, time_labels, src_pred, score_pred, binary_class_label)
+            src_pred, score_pred, wave_out = model(audio_mix) # (n_src, B, 1, freq, time) (n_src, B, time)
+            #loss = loss_fn(audio_mix, time_labels, src_pred, score_pred, binary_class_label)
+            loss = loss_fn(audio_sources, wave_out)
 
             optimizer.zero_grad()
             loss.backward()

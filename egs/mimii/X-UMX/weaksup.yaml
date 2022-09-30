@@ -1,7 +1,7 @@
 audio_dir: /hdd/hdd1/lyj/UrbanSound8K/audio
 batch_size: 10
 epochs: 100
-epoch_val: 90
+epoch_val: 10
 input_size: 513
 hidden_size: 600
 num_layer: 3
