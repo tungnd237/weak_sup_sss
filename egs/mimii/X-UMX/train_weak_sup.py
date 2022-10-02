@@ -8,15 +8,12 @@ import random
 import glob
 import os
 import tqdm
-from asteroid.models import Separator
+from asteroid.models import WeakSupModel
 from asteroid.models.x_umx import _STFT, _Spectrogram
 import wandb
 from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
 wandb.init(project="weak_sup")
-
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
-os.environ["CUDA_VISIBLE_DEVICES"]= "1"
 
 class UrbanSoundDataset(torch.utils.data.Dataset):
 
@@ -26,13 +23,14 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
         self.audio_dir = audio_dir 
         self.target_sample_rate = target_sample_rate
         self.target_time = target_time
-        self.data = {}
+        self.data = {index: {} for index in range(len(self.file_path_lst))}
 
     def __len__(self):
         return len(self.file_path_lst)
 
     def __getitem__(self, index):
-        if self.data == None:
+        
+        if len(self.data[index]) == 0:
             # TODO: adpative pooling dimension 정리
             # set adaptivepooling 
             m = nn.AdaptiveAvgPool1d(126)
@@ -47,7 +45,7 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
 
                 # load, downsample, convert to mono
                 audio, sr = torchaudio.load(audio_target_path[idx])
-                audio = self._resample_if_necessary(audio, self.target_sample_rate)
+                audio = self._resample_if_necessary(audio, sr, self.target_sample_rate)
                 audio = torch.mean(audio, dim = 0).reshape(1, -1).cuda()
                 
                 # randomly select the starting point and truncate if it's longer than target length
@@ -56,8 +54,8 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
                 end = start + audio.shape[1]
 
                 if end > self.target_sample_rate * self.target_time:
-                    end_truncated = self.target_sample_rate * self.target_time - end
-                    audio_sources[source][:, start:] = audio[:, :end_truncated]
+                    end_truncated = end - self.target_sample_rate * self.target_time
+                    audio_sources[source][:, start:] = audio[:, :-end_truncated]
                     time_labels[source][:, start:] = 1
                 else:
                     audio_sources[source][:, start:end] = audio
@@ -71,7 +69,7 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
 
             # generate mixture
             audio_mix = torch.stack(list(audio_sources.values())).sum(0)
-            audio_sources = torch.stack([wav for wav in audio_sources.values()], dim=0)
+            audio_sources = torch.stack([audio_sources[src] for src in self.class_id_lst], dim=0)
             time_labels = torch.stack([label for label in time_labels.values()], dim=0)
                 
         
@@ -81,13 +79,23 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
             for idx, id in enumerate(self.class_id_lst):
                 if id in class_id_target:
                     binary_class_label[idx] = 1
-        else:
 
-                
+
+            self.data[index] = {"audio_mix": audio_mix,
+                            "audio_sources": audio_sources,
+                            "time_labels": time_labels,
+                            "binary_class_label": binary_class_label,}     
+            
+        else:
+            audio_mix = self.data[index]['audio_mix']
+            audio_sources = self.data[index]['audio_sources']
+            time_labels = self.data[index]['time_labels']
+            binary_class_label = self.data[index]['binary_class_label']
+
         return audio_mix, audio_sources, time_labels, binary_class_label
 
 
-    def _resample_if_necessary(self, audio, sr):        
+    def _resample_if_necessary(self, audio, sr, target_sample_rate):        
         if sr != self.target_sample_rate:
             resampler = torchaudio.transforms.Resample(sr, self.target_sample_rate)
             audio = resampler(audio)
@@ -119,7 +127,7 @@ class UrbanSoundDataset(torch.utils.data.Dataset):
         return time_label
 
 
-def dataset_generator(audio_dir, class_id_lst):
+def file_path_generator(audio_dir, class_id_lst):
 
     # 1: car_horn, 3: dog_bark, 6: gun_shot, 7: jackhammer, 8: siren
     # train_fold: 1-6, eval_fold: 7,8
@@ -230,35 +238,38 @@ def cal_sup_loss(audio_sources, src_pred):
 if __name__ == "__main__":
     with open("weaksup.yaml") as stream:
         param = yaml.safe_load(stream)
+    
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  
+    os.environ["CUDA_VISIBLE_DEVICES"]= param['gpu']
 
     print("========== Dataset Generator ==========")
     class_id_lst = [1, 3, 6, 7, 8] 
     audio_dir = param["audio_dir"]
-    #mel_spectrogram = torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_fft=1024, hop_length=512,n_mels=64)
-
-    train_files, eval_files = dataset_generator(audio_dir, class_id_lst)
+    
+    train_files, eval_files = file_path_generator(audio_dir, class_id_lst)
     train_dataset = UrbanSoundDataset(train_files, class_id_lst, audio_dir)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = param["batch_size"], shuffle = True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = param["batch_size"], shuffle = True, drop_last = True)
 
     eval_dataset = UrbanSoundDataset(eval_files, class_id_lst, audio_dir)
-    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size = param["batch_size"], shuffle = True)
+    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size = param["batch_size"], shuffle = False)
    
     print("========== Model Training ==========")
     input_size = param["input_size"]
     hidden_size = param["hidden_size"]
     num_layer = param["num_layer"]
     epoch_val = param["epoch_val"]
-
-    model = Separator(input_size, hidden_size, num_layer).cuda()
-    optimizer = torch.optim.Adam(model.parameters(), lr = 1.0e-3)
+    
+    model = WeakSupModel(input_size, hidden_size, num_layer).cuda()
+    optimizer = torch.optim.Adam(model.parameters(), lr = param['lr'])
     loss_fn = cal_sup_loss
     #loss_fn = cal_total_loss
 
     for epoch in range(1, param["epochs"]):
-        print(epoch)
+        print("epoch:", epoch)
+        i = 1
         losses = []
         for batch in train_loader:
-            
+            print(i, "/", len(train_loader))
             audio_mix = batch[0].cuda() # (B, 1, sr*time)
             audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
             time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
@@ -272,6 +283,7 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
+            i+=1
         wandb.log({"Train Loss:": sum(losses) / len(losses)})
         if epoch % 10 == 0:
             print(f"epoch {epoch}: loss {sum(losses) / len(losses)}")

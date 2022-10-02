@@ -10,7 +10,7 @@ from .fasnet import FasNetTAC
 from .lstm_tasnet import LSTMTasNet
 from .demask import DeMask
 from .x_umx import XUMX
-from .weak_sup import Separator, Classifier
+from .weak_sup import Separator, Classifier, WeakSupModel
 
 # Sharing-related
 from .publisher import save_publishable, upload_publishable
@@ -29,6 +29,7 @@ __all__ = [
     "XUMX",
     "Separator",
     "Classifier",
+    "WeakSupModel",
     "save_publishable",
     "upload_publishable",
 ]
