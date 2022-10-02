@@ -8,13 +8,14 @@ class WeakSupModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_layer, num_sources = 5, window_length = 1024, in_chan = 1024, n_hop = 512, spec_power  = True, nb_channels = 1, sample_rate = 16000):
         super(WeakSupModel, self).__init__()
         self.sep_model = Separator(input_size, hidden_size, num_layer, num_sources = 5, window_length = 1024, in_chan = 1024, n_hop = 512, spec_power  = True, nb_channels = 1, sample_rate = 16000).cuda()
-        self.classifier = Classifier(input_size, hidden_size=100, num_layer=2).cuda() 
+        #self.classifier = Classifier(input_size, hidden_size=100, num_layer=2).cuda() 
 
     def forward(self, wav):
 
+        score = 0
         spec_out, wave_out = self.sep_model(wav)
-        score = self.classifier(spec_out)
-    
+        #score = self.classifier(spec_out)
+
         return spec_out, score, wave_out
 
 
@@ -25,7 +26,7 @@ class Separator(nn.Module):
         super(Separator, self).__init__()
         stft = _STFT(window_length=window_length, n_fft=in_chan, n_hop=n_hop, center=True)
         spec = _Spectrogram(spec_power=spec_power, mono=(nb_channels == 1))
-        self.get_spec = nn.Sequential(stft, spec).cuda() # Return: Spec, Angle
+        self.get_spec = nn.Sequential(stft, spec) # Return: Spec, Angle
         self.decoder = _ISTFT(window = stft.window, n_fft = in_chan, hop_length = n_hop, center = True).cuda()
 
         self.num_sources = num_sources
@@ -63,8 +64,8 @@ class Separator(nn.Module):
         mixture, ang = self.get_spec(wav)   # (time, B, nb_channels, freq)
         mixture = mixture.squeeze(2) # (time, B, freq)
         
-        spec_mask = self.forward_masker(mixture) # (time, batch, freq, n_src)                     
-        masked_mixture = self.apply_masks(mixture, spec_mask).permute(0, 3, 2, 1).unsqueeze(3) 
+        spec_mask = self.forward_masker(mixture) # (time, batch, freq, n_src)                   
+        masked_mixture = self.apply_masks(mixture, spec_mask).permute(0, 3, 2, 1).unsqueeze(3) # (n_src, freq, batch, 1,  time)   
         spec_out = masked_mixture.permute(0, 2, 3, 1, 4) # (n_src, B, 1, freq, time)
     
         wave_out = self.decoder(spec_out, ang)

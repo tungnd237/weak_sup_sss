@@ -224,7 +224,7 @@ def cal_total_loss(audio_mix, time_labels, src_pred, score_pred, binary_class_la
 
 def cal_sup_loss(audio_sources, src_pred):
     # audio_sources: (B, n_src, 1, sr*time) --> (B, n_src, sr*time)
-    # src_pred: (n_src, B, 1, sr*time)
+    # src_pred: (n_src, B, 1, sr*time) 
 
     # set dimension as the same
     audio_sources = audio_sources.squeeze(2) 
@@ -269,17 +269,18 @@ if __name__ == "__main__":
         i = 1
         losses = []
         for batch in train_loader:
-            print(i, "/", len(train_loader))
+            #print(i, "/", len(train_loader))
             audio_mix = batch[0].cuda() # (B, 1, sr*time)
             audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
             time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
             binary_class_label = batch[3].cuda()
 
-            src_pred, score_pred, wave_out = model(audio_mix) # (n_src, B, 1, freq, time) (n_src, B, time)
+            optimizer.zero_grad()
+
+            src_pred, score_pred, wave_out = model(audio_mix) # (n_src, B, 1, freq, time) (n_src, B, time) (n_src, batch, 1, sr*time)
             #loss = loss_fn(audio_mix, time_labels, src_pred, score_pred, binary_class_label)
             loss = loss_fn(audio_sources, wave_out)
-
-            optimizer.zero_grad()
+            
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
