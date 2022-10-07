@@ -8,7 +8,7 @@ import random
 import glob
 import os
 import tqdm
-from asteroid.models import WeakSupModel
+from asteroid.models import WeakSupModel, Classifier
 from asteroid.models.x_umx import _STFT, _Spectrogram
 import wandb
 from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
@@ -319,26 +319,38 @@ if __name__ == "__main__":
     num_layer = param["num_layer"]
     epoch_val = param["epoch_val"]
     
-    model = WeakSupModel(input_size, hidden_size, num_layer).cuda()
+    model = Classifier(input_size, hidden_size, num_layer).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr = param['lr'])
-    loss_fn = cal_spec_sup_loss
-    #loss_fn = cal_total_loss
+    loss_fn = cal_frame_loss
+    
+    get_spec = nn.Sequential(
+            _STFT(window_length=param['window_length'], n_fft=param['window_length'], n_hop=param['n_hop']),
+            _Spectrogram(spec_power=True, mono=1)).cuda() 
 
     for epoch in range(1, param["epochs"]):
         print("epoch:", epoch)
         i = 1
         losses = []
         for batch in train_loader:
-            audio_mix = batch[0].cuda() # (B, 1, sr*time)
             audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
             time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
-            binary_class_label = batch[3].cuda()
 
+            n_src = audio_sources.shape[1]
+            audio_sources = audio_sources.squeeze(2)
+            temp, _ = get_spec(audio_sources[:, 0, :].unsqueeze(1))
+            audio_sources_spec = torch.zeros_like(temp)
+            print(audio_sources_spec.shape)
+            for i in range(n_src):
+                audio_sources_spec_temp, _ = get_spec(audio_sources[:, i, :].unsqueeze(1))
+                audio_sources_spec = torch.stack([audio_sources_spec,audio_sources_spec_temp], dim = 0)
+            audio_sources_spec = audio_sources_spec[1:, :, :, :]
+            audio_sources_spec = audio_sources_spec.cuda()
+            print("GT:", audio_sources_spec.shape)
             optimizer.zero_grad()
+            
 
-            src_pred, score_pred, wave_out = model(audio_mix) # (n_src, B, 1, freq, time) (n_src, B, time) (n_src, batch, 1, sr*time)
-            #loss = loss_fn(audio_mix, time_labels, src_pred, score_pred, binary_class_label)
-            loss = loss_fn(audio_sources, src_pred, param)
+            score_pred = model(audio_sources_spec) 
+            loss = loss_fn(time_labels, score_pred)
             
             loss.backward()
             optimizer.step()
@@ -353,33 +365,27 @@ if __name__ == "__main__":
             print("========== Model Evaluation ==========")
             model.eval()
 
+            total_eval_loss = 0
+
             si_sdr = {src: 0 for src in class_id_lst}
             
             for batch in eval_loader:
-                audio_mix = batch[0].cuda() 
-                audio_sources = batch[1].squeeze(2).cuda()  #(B, n_src, sr*time)
-                               
-                _, _ , wave_out = model(audio_mix)
-                wave_out = wave_out.permute(1, 0, 2, 3).squeeze(2) # (n_src, B, 1, sr*time) --> #(B, n_src, sr*time)
-                
+                audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
+                time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
 
-                # # Add SI-SDR
-                # si_sdr_single_src = torch.mean(scale_invariant_signal_distortion_ratio(wave_out, audio_sources), dim = 0)
-                # for idx, src in enumerate(class_id_lst):
-                #     si_sdr[src] += si_sdr_single_src[idx]/len(eval_loader)
+                n_src = audio_sources.shape[1]
+                audio_sources = audio_sources.squeeze(2)
+                audio_sources_spec = torch.stack([get_spec(audio_sources[:, i, :].unsqueeze(1)) for i in range(n_src)]).cuda() #source_mask = (time, batch, freq)
 
-                # Add SI-SDR
-                for idx, src in enumerate(class_id_lst):
-                    si_sdr_single_src = torch.mean(sisnr(wave_out[:, idx, :], audio_sources[:, idx, :]), dim = 0)
-                    si_sdr[src] += si_sdr_single_src/len(eval_loader)
-                    
+                score_pred = model(audio_sources_spec) 
+                total_eval_loss += loss_fn(time_labels, score_pred)/len(eval_loader)
+
 
             # Add audio to wandb
-            wandb.log({"SI-SDR:": si_sdr})
-            
+            wandb.log({"eval_loss:": total_eval_loss})
+            time_labels = time_labels.squeeze(2)
+            score_pred = score_pred.squeeze(2)
             for idx, src in enumerate(class_id_lst):
-                wandb.log({f"gt_id: {src}": [wandb.Audio(audio_sources[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
-                f"pred_id: {src}": [wandb.Audio(wave_out[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
-                "mix": [wandb.Audio(audio_mix[0, :, :].detach().cpu().numpy(), sample_rate=16000)]})
-
+                wandb.log({f"gt_label_{src}": time_labels[0, idx, :].detach().cpu().numpy(),
+                f"pred_label_{src}": score_pred[0, idx, :].detach().cpu().numpy(),})
             model.train()

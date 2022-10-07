@@ -61,10 +61,10 @@ class Separator(nn.Module):
         wave_out: (sources, batch, channel, time)
         
         """
-        mixture, ang = self.get_spec(wav)   # (time, B, nb_channels, freq)
+        mixture, ang = self.get_spec(wav)   # (B, 1, sr*time) --> (time, B, nb_channels, freq)
         mixture = mixture.squeeze(2) # (time, B, freq)
         
-        spec_mask = self.forward_masker(mixture) # (time, batch, freq, n_src)                   
+        spec_mask = self.forward_masker(mixture.clone()) # (time, batch, freq, n_src)                   
         masked_mixture = self.apply_masks(mixture, spec_mask).permute(0, 3, 2, 1).unsqueeze(3) # (n_src, freq, batch, 1,  time)   
         spec_out = masked_mixture.permute(0, 2, 3, 1, 4) # (n_src, B, 1, freq, time)
     
