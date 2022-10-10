@@ -11,7 +11,7 @@ import tqdm
 from asteroid.models import WeakSupModel, Classifier
 from asteroid.models.x_umx import _STFT, _Spectrogram
 import wandb
-from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
+#from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
 wandb.init(project="weak_sup")
 
@@ -319,6 +319,7 @@ if __name__ == "__main__":
     num_layer = param["num_layer"]
     epoch_val = param["epoch_val"]
     
+    
     model = Classifier(input_size, hidden_size, num_layer).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr = param['lr'])
     loss_fn = cal_frame_loss
@@ -335,21 +336,24 @@ if __name__ == "__main__":
             audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
             time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
 
+            # convert gt audio from wav to spec
             n_src = audio_sources.shape[1]
             audio_sources = audio_sources.squeeze(2)
             temp, _ = get_spec(audio_sources[:, 0, :].unsqueeze(1))
-            audio_sources_spec = torch.zeros_like(temp)
-            print(audio_sources_spec.shape)
+            audio_sources_spec = torch.zeros_like(temp).unsqueeze(0)
+            
+            # stack sepc
+            # audio_sources_spec: (n_src, time, B, 1, freq)
             for i in range(n_src):
                 audio_sources_spec_temp, _ = get_spec(audio_sources[:, i, :].unsqueeze(1))
-                audio_sources_spec = torch.stack([audio_sources_spec,audio_sources_spec_temp], dim = 0)
-            audio_sources_spec = audio_sources_spec[1:, :, :, :]
+                audio_sources_spec = torch.cat([audio_sources_spec,audio_sources_spec_temp.unsqueeze(0)], dim = 0)
+            audio_sources_spec = audio_sources_spec[1:, :, :, :].permute(0, 2, 3, 4, 1)
             audio_sources_spec = audio_sources_spec.cuda()
-            print("GT:", audio_sources_spec.shape)
+           
+
             optimizer.zero_grad()
             
-
-            score_pred = model(audio_sources_spec) 
+            score_pred = model(audio_sources_spec)   # (n_src, B, 1, freq, time)
             loss = loss_fn(time_labels, score_pred)
             
             loss.backward()
@@ -376,6 +380,21 @@ if __name__ == "__main__":
                 n_src = audio_sources.shape[1]
                 audio_sources = audio_sources.squeeze(2)
                 audio_sources_spec = torch.stack([get_spec(audio_sources[:, i, :].unsqueeze(1)) for i in range(n_src)]).cuda() #source_mask = (time, batch, freq)
+
+                # convert gt audio from wav to spec
+                n_src = audio_sources.shape[1]
+                audio_sources = audio_sources.squeeze(2)
+                temp, _ = get_spec(audio_sources[:, 0, :].unsqueeze(1))
+                audio_sources_spec = torch.zeros_like(temp).unsqueeze(0)
+                
+                # stack sepc
+                # audio_sources_spec: (n_src, time, B, 1, freq)
+                for i in range(n_src):
+                    audio_sources_spec_temp, _ = get_spec(audio_sources[:, i, :].unsqueeze(1))
+                    audio_sources_spec = torch.cat([audio_sources_spec,audio_sources_spec_temp.unsqueeze(0)], dim = 0)
+                audio_sources_spec = audio_sources_spec[1:, :, :, :].permute(0, 2, 3, 4, 1)
+                audio_sources_spec = audio_sources_spec.cuda()
+           
 
                 score_pred = model(audio_sources_spec) 
                 total_eval_loss += loss_fn(time_labels, score_pred)/len(eval_loader)

@@ -11,7 +11,7 @@ import tqdm
 from asteroid.models import WeakSupModel
 from asteroid.models.x_umx import _STFT, _Spectrogram
 import wandb
-from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
+#from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
 wandb.init(project="weak_sup")
 
@@ -275,6 +275,8 @@ def sisnr(x, s, eps=1e-8):
     Return:
           sisnr: N tensor
     """
+    # x : (B, sr*time)
+    # s : (B, sr*time)
     def l2norm(mat, keepdim=False):
         return torch.norm(mat, dim=-1, keepdim=keepdim)
 
@@ -289,7 +291,7 @@ def sisnr(x, s, eps=1e-8):
     t = torch.sum(
         x_zm * s_zm, dim=-1,
         keepdim=True) * s_zm / (l2norm(s_zm, keepdim=True)**2 + eps)
-
+    
     return 20 * torch.log10(eps + l2norm(t) / (l2norm(x_zm - t) + eps))
 
 
@@ -356,9 +358,9 @@ if __name__ == "__main__":
             si_sdr = {src: 0 for src in class_id_lst}
             
             for batch in eval_loader:
-                audio_mix = batch[0].cuda() 
+                audio_mix = batch[0].cuda()  # (B, 1, sr*time)
                 audio_sources = batch[1].squeeze(2).cuda()  #(B, n_src, sr*time)
-                               
+        
                 _, _ , wave_out = model(audio_mix)
                 wave_out = wave_out.permute(1, 0, 2, 3).squeeze(2) # (n_src, B, 1, sr*time) --> #(B, n_src, sr*time)
                 
@@ -370,7 +372,7 @@ if __name__ == "__main__":
 
                 # Add SI-SDR
                 for idx, src in enumerate(class_id_lst):
-                    si_sdr_single_src = torch.mean(sisnr(wave_out[:, idx, :], audio_sources[:, idx, :]), dim = 0)
+                    si_sdr_single_src = torch.mean(sisnr(wave_out[:, idx, :], audio_sources[:, idx, :]))
                     si_sdr[src] += si_sdr_single_src/len(eval_loader)
                     
 
@@ -380,6 +382,6 @@ if __name__ == "__main__":
             for idx, src in enumerate(class_id_lst):
                 wandb.log({f"gt_id: {src}": [wandb.Audio(audio_sources[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
                 f"pred_id: {src}": [wandb.Audio(wave_out[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
-                "mix": [wandb.Audio(audio_mix[0, :, :].detach().cpu().numpy(), sample_rate=16000)]})
+                "mix": [wandb.Audio(audio_mix[0, 0, :].detach().cpu().numpy(), sample_rate=16000)]})
 
             model.train()
