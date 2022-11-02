@@ -1,13 +1,14 @@
-audio_dir: /hdd/hdd1/lyj/UrbanSound8K/audio
-batch_size: 10
-epochs: 100
-epoch_val: 1
-
+# audio_dir: /hdd/hdd1/lyj/UrbanSound8K/audio
+audio_dir: /hdd/hdd1/lyj/synthetic-noisy-urban-soundscapes_mixtures-bkgr-none
+batch_size: 50
+epochs: 1000
+epoch_val: 100
+milestones: [100, 200, 300 ,400, 500, 800]
 input_size: 513
 hidden_size: 600
-num_layer: 3
+num_layer: 5
 window_length: 1024
 n_hop: 512
 source_random: False
-gpu: '1'
-lr: 1.0e-4
+gpu: '4'
+lr: 1.0

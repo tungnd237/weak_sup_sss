@@ -7,6 +7,7 @@ import yaml
 import random
 import glob
 import os
+import jams
 import tqdm
 from asteroid.models import WeakSupModel
 from asteroid.models.x_umx import _STFT, _Spectrogram
@@ -14,7 +15,112 @@ import wandb
 #from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
 
 wandb.init(project="weak_sup")
+wandb.run.name = 'sinle'
 
+class UrbanSoundDenoisedDataset(torch.utils.data.Dataset):
+
+    def __init__(self, train, audio_dir, target_sample_rate = 16000, sources = ['car_horn', 'dog_bark' ,'gun_shot', 'jackhammer', 'siren'], target_time =4):
+        self.audio_dir = audio_dir
+        self.target_sample_rate = target_sample_rate
+        self.target_time = target_time
+        self.sources =  sources
+        self.train = train
+        self.mix_file_path = self.load_mix_path(self.audio_dir, self.train)
+        self.data = {index: {} for index in range(len(self.mix_file_path))}
+        
+
+    def __len__(self):
+        return len(self.mix_file_path)
+
+    def __getitem__(self, index):
+     
+        if len(self.data[index]) == 0:
+            src_lst = []
+            
+            audio_sources = {src: torch.zeros(1, self.target_sample_rate* self.target_time).cuda() for src in self.sources}
+            time_labels = {src: torch.zeros(1, 126).cuda() for src in self.sources}
+            
+            # load mixture
+            mixture_path = self.mix_file_path[index]
+            audio_mix, sr = torchaudio.load(mixture_path)
+            
+            # audio_mix = self._resample_if_necessary(audio_mix, sr, self.target_sample_rate)
+
+            # load audio_sources
+            event_name = os.path.split(self.mix_file_path[index])[-1].split('.')[0] 
+            sources_dir = os.path.join(os.path.split(self.mix_file_path[index])[0], event_name + "_events")
+            sources_file_list = [os.path.join(sources_dir, f) for f in os.listdir(sources_dir)]
+                     
+            for src_path in sources_file_list:
+                src = os.path.split(src_path)[-1].split('.')[0][12:]
+                src_lst.append(src)
+                audio, sr = torchaudio.load(src_path)
+                audio_sources[src] = audio.cuda()
+                
+            # Add annotation
+            annotation_path = os.path.join(os.path.split(self.mix_file_path[index])[0], event_name + ".jams")
+            jam = jams.load(annotation_path)
+            annotation_values = jam["annotations"][0]['data']
+            source_num = len(annotation_values)
+
+            for i in range(source_num):
+                time_label_temp = torch.zeros(1, self.target_sample_rate* self.target_time).cuda()
+                source_label = annotation_values[i].value['label']
+                if source_label in src_lst:
+                    start_time = int(annotation_values[i].value['event_time']*self.target_sample_rate)
+                    duration = int(annotation_values[i].value['event_duration']*self.target_sample_rate)
+                    time_label_temp[:, start_time:start_time+duration] = 1.0
+                    time_labels[source_label]= nn.functional.adaptive_avg_pool1d(time_label_temp, 126)
+                    
+            # generate mixture
+            audio_sources = torch.stack([audio_sources[src] for src in self.sources], dim=0)
+            time_labels = torch.stack([label for label in time_labels.values()], dim=0)       
+                    
+            # # convert class_id_target to binary label
+            # binary_class_label = torch.zeros(len(self.sources))
+
+            # for idx, source in enumerate(src_lst):
+            #     if id in src_lst:
+            #         binary_class_label[idx] = 1
+                    
+            
+            self.data[index] = {"audio_mix": audio_mix,
+                            "audio_sources": audio_sources,
+                            "time_labels": time_labels,}
+                            # "binary_class_label": binary_class_label,} 
+                    
+        else:
+            audio_mix = self.data[index]['audio_mix']
+            audio_sources = self.data[index]['audio_sources']
+            time_labels = self.data[index]['time_labels']
+            # binary_class_label = self.data[index]['binary_class_label']
+                
+            
+        return audio_mix, audio_sources, time_labels
+    
+    
+    def load_mix_path(self, audio_dir, train = True):
+        file_path = []
+        set = 'train' if train else 'valid' 
+        for track_path in tqdm.tqdm(glob.glob(f'{audio_dir}/{set}/*.wav')):
+            file_path.append(track_path)
+        num = len(file_path)//10
+        # file_path = file_path[:5] 
+        # file_path = file_path[27:28] 
+        file_path = file_path[:50]
+        
+        return file_path
+    
+    def _resample_if_necessary(self, audio, sr, target_sample_rate):        
+        if sr != self.target_sample_rate:
+            resampler = torchaudio.transforms.Resample(sr, self.target_sample_rate)
+            audio = resampler(audio)
+        return audio
+
+    
+    
+    
+    
 class UrbanSoundDataset(torch.utils.data.Dataset):
 
     def __init__(self, file_path, class_id_lst, audio_dir, target_sample_rate = 16000, target_time = 4, source_random = True):
@@ -247,18 +353,21 @@ def cal_spec_sup_loss(audio_sources, src_pred, param):
     get_spec = nn.Sequential(
             _STFT(window_length=param['window_length'], n_fft=param['window_length'], n_hop=param['n_hop']),
             _Spectrogram(spec_power=True, mono=1)).cuda() 
-
+    
     total_loss = 0
     criterion = nn.L1Loss()
+    
     # convert audio source wav to spectrogram
     n_src = audio_sources.shape[1]
     audio_sources = audio_sources.squeeze(2)
     src_pred = src_pred.squeeze(2)
     
+    # ratio = [0.26, 0.36, 0.27, 0.40, 0.40]
+    
     for src in range(n_src):
         gt_spec_src, _ = get_spec(audio_sources[:, src, :].unsqueeze(1))
         gt_spec_src = gt_spec_src.squeeze(2).permute(1, 2, 0) # (batch, freq, time)
-        total_loss += criterion(src_pred[src, :, :,], gt_spec_src)
+        total_loss += criterion(src_pred[src, :, :,], gt_spec_src) 
 
     return total_loss
 
@@ -277,6 +386,7 @@ def sisnr(x, s, eps=1e-8):
     """
     # x : (B, sr*time)
     # s : (B, sr*time)
+    
     def l2norm(mat, keepdim=False):
         return torch.norm(mat, dim=-1, keepdim=keepdim)
 
@@ -295,7 +405,7 @@ def sisnr(x, s, eps=1e-8):
     return 20 * torch.log10(eps + l2norm(t) / (l2norm(x_zm - t) + eps))
 
 
-
+##########################################################################
 
 if __name__ == "__main__":
     with open("weaksup.yaml") as stream:
@@ -305,15 +415,23 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"]= param['gpu']
 
     print("========== Dataset Generator ==========")
-    class_id_lst = [1, 3, 6, 7, 8] 
+    # class_id_lst = [1, 3, 6, 7, 8]
+    sources = ['car_horn', 'dog_bark' ,'gun_shot', 'jackhammer', 'siren']
     audio_dir = param["audio_dir"]
     
-    train_files, eval_files = file_path_generator(audio_dir, class_id_lst)
-    train_dataset = UrbanSoundDataset(train_files, class_id_lst, audio_dir, source_random = param['source_random'])
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = param["batch_size"], shuffle = True, drop_last = True)
+    # train_files, eval_files = file_path_generator(audio_dir, class_id_lst)
+    # train_dataset = UrbanSoundDataset(train_files, class_id_lst, audio_dir, source_random = param['source_random'])
+    # train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = param["batch_size"], shuffle = True, drop_last = True)
 
-    eval_dataset = UrbanSoundDataset(eval_files, class_id_lst, audio_dir, source_random = param['source_random'])
+    # eval_dataset = UrbanSoundDataset(eval_files, class_id_lst, audio_dir, source_random = param['source_random'])
+    # eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size = param["batch_size"], shuffle = False)
+    
+    train_dataset = UrbanSoundDenoisedDataset(train = True, audio_dir = audio_dir)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = param["batch_size"], shuffle = True, drop_last = True)
+    
+    eval_dataset = UrbanSoundDenoisedDataset(train = True, audio_dir = audio_dir)
     eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size = param["batch_size"], shuffle = False)
+    
    
     print("========== Model Training ==========")
     input_size = param["input_size"]
@@ -323,8 +441,11 @@ if __name__ == "__main__":
     
     model = WeakSupModel(input_size, hidden_size, num_layer).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr = param['lr'])
+    #scheduler
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=param['milestones'], gamma= 0.1)
     loss_fn = cal_spec_sup_loss
     #loss_fn = cal_total_loss
+    # loss_fn = cal_wav_sup_loss
 
     for epoch in range(1, param["epochs"]):
         print("epoch:", epoch)
@@ -333,8 +454,8 @@ if __name__ == "__main__":
         for batch in train_loader:
             audio_mix = batch[0].cuda() # (B, 1, sr*time)
             audio_sources = batch[1].cuda() # (B, n_src, 1, sr*time)
-            time_labels = batch[2].cuda() # (B, n_src, 1, sr*time)
-            binary_class_label = batch[3].cuda()
+            time_labels = batch[2].cuda() # (B, n_src, 1, sr*time) new_dataset: (B, n_src, 1, 126)
+            # binary_class_label = batch[3].cuda()
 
             optimizer.zero_grad()
 
@@ -346,6 +467,7 @@ if __name__ == "__main__":
             optimizer.step()
             losses.append(loss.item())
             i+=1
+        scheduler.step()
         wandb.log({"Train Loss:": sum(losses) / len(losses)})
         if epoch % 10 == 0:
             print(f"epoch {epoch}: loss {sum(losses) / len(losses)}")
@@ -355,33 +477,43 @@ if __name__ == "__main__":
             print("========== Model Evaluation ==========")
             model.eval()
 
-            si_sdr = {src: 0 for src in class_id_lst}
+            si_sdr = {src: 0 for src in sources}
             
             for batch in eval_loader:
-                audio_mix = batch[0].cuda()  # (B, 1, sr*time)
+                si_sdr_temp = {src: 0 for src in sources}
+                n_sample_dict = {src: param['batch_size'] for src in sources} 
+                audio_mix = batch[0].cuda()  # (B, 1, sr*time)E
                 audio_sources = batch[1].squeeze(2).cuda()  #(B, n_src, sr*time)
-        
+                
                 _, _ , wave_out = model(audio_mix)
                 wave_out = wave_out.permute(1, 0, 2, 3).squeeze(2) # (n_src, B, 1, sr*time) --> #(B, n_src, sr*time)
-                
 
-                # # Add SI-SDR
-                # si_sdr_single_src = torch.mean(scale_invariant_signal_distortion_ratio(wave_out, audio_sources), dim = 0)
-                # for idx, src in enumerate(class_id_lst):
-                #     si_sdr[src] += si_sdr_single_src[idx]/len(eval_loader)
 
                 # Add SI-SDR
-                for idx, src in enumerate(class_id_lst):
-                    si_sdr_single_src = torch.mean(sisnr(wave_out[:, idx, :], audio_sources[:, idx, :]))
-                    si_sdr[src] += si_sdr_single_src/len(eval_loader)
-                    
+                for idx, src in enumerate(sources):
+                    for b_num in range(param['batch_size']):
+                        if torch.mean(audio_sources[b_num, idx, :]) == 0:
+                            n_sample_dict[src] -= 1
+                            si_sdr_single_src = 0
+                        else:
+                            si_sdr_single_src = torch.mean(sisnr(wave_out[b_num, idx, :].unsqueeze(0), audio_sources[b_num, idx, :].unsqueeze(0)))
+                            print("SI_SDR:", si_sdr_single_src)
+                        si_sdr_temp[src] += si_sdr_single_src
+
+     
+                for src in sources:
+                    if n_sample_dict[src] != 0:
+                        si_sdr_temp[src] /= n_sample_dict[src]  
+                    else:
+                        si_sdr_temp[src] = 0
+                    si_sdr[src] += si_sdr_temp[src]/len(eval_loader)        
 
             # Add audio to wandb
             wandb.log({"SI-SDR:": si_sdr})
             
-            for idx, src in enumerate(class_id_lst):
-                wandb.log({f"gt_id: {src}": [wandb.Audio(audio_sources[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
-                f"pred_id: {src}": [wandb.Audio(wave_out[0, idx, :].detach().cpu().numpy(), sample_rate=16000)],
-                "mix": [wandb.Audio(audio_mix[0, 0, :].detach().cpu().numpy(), sample_rate=16000)]})
+            for idx, src in enumerate(sources):
+                wandb.log({f"gt_id: {src}": [wandb.Audio(audio_sources[27, idx, :].detach().cpu().numpy(), sample_rate=16000)],
+                f"pred_id: {src}": [wandb.Audio(wave_out[27, idx, :].detach().cpu().numpy(), sample_rate=16000)],
+                "mix": [wandb.Audio(audio_mix[27, 0, :].detach().cpu().numpy(), sample_rate=16000)]})
 
             model.train()
